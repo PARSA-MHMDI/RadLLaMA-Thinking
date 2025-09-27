@@ -344,7 +344,7 @@ If you use this repository, models, or datasets in your research, please cite:
 
 ## Licenses & Data Access
 
-* **Models & Code**: Apache-2.0.
+* **Models & Code**: This repository is licensed under the [Apache License 2.0](LICENSE).
 * **MIMIC-CXR / CheXpert Plus**: require credentialed access and adherence to their data use agreements. **We do not redistribute images or PHI.**
 * **Intended Use**: research and education.
 
