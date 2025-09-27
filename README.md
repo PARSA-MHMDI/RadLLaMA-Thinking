@@ -1,7 +1,3 @@
-Here’s a clean, copy-paste-ready `README.md` you can drop into your repo. I’ve left explicit placeholders where you said you’ll add assets/links.
-
----
-
 # Clinical Reasoning Enhancement for Chest X-ray Reporting
 
 ### Chain-of-Thought tuning of Large Vision-Language Models (RadLLaMA & RadLLaMA-Thinking)
