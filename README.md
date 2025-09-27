@@ -1,36 +1,22 @@
 # Clinical Reasoning Enhancement for Chest X-ray Reporting
 
-### Chain-of-Thought tuning of Large Vision-Language Models (RadLLaMA & RadLLaMA-Thinking)
 
-> **TL;DR**: We fine-tune the LLaMA-3.2 Vision model for full chest X-ray report generation (Findings + Impression) in two stages: (1) large-scale domain tuning on MIMIC-CXR 2.1.0 + CheXpert Plus; (2) teacher–student **Chain-of-Thought (CoT)** distillation on a curated, 10-step reasoning dataset. The final **RadLLaMA-Thinking** model improves lexical, semantic, and clinical metrics (BLEU-4, ROUGE-L, METEOR, BERTScore, CheXbert-F1) under memory-efficient training (QLoRA, Unsloth).
+![RadLLaMA-Thinking Cover](./Images/raidologiest_llama.jpeg)
 
----
-
-## 📷 Cover Image
-
-> *Add your hero/architecture/teaser image here.*
-
-```
-![RadLLaMA-Thinking Cover](PATH/TO/YOUR/COVER.png)
-```
-
----
 
 ## 📌 Outline
 
 * [Overview & Highlights](#overview--highlights)
 * [Model Zoo](#model-zoo)
 * [Quickstart: Inference Guide](#quickstart-inference-guide)
-
-  * [GPU (4-bit, Transformers/bitsandbytes)](#gpu-4-bit-transformersbitsandbytes)
-  * [CPU options](#cpu-options)
-  * [Generate a full RSNA-style report](#generate-a-full-rsna-style-report)
-  * [Generate with explicit 10-step CoT](#generate-with-explicit-10-step-cot)
+  * [🚀 Inference (Unsloth, 4-bit)](#-inference-unsloth-4-bit)
+  * [Gradio Demo](#-gradio-demo-single-file-app)
 * [Results (brief)](#results-brief)
 * [Project Structure](#project-structure)
 * [Citation](#citation)
 * [Licenses & Data Access](#licenses--data-access)
 * [Disclaimer](#disclaimer)
+* [Maintainers](#maintainers)
 
 ---
 
@@ -50,145 +36,272 @@ BLEU-4 **0.143**, ROUGE-L **0.314**, METEOR **0.300**, BERTScore-F1 **0.443**, C
 
 ## Model Zoo
 
-> *Add your final Hugging Face links in the **Weights** column. Keep names consistent with your HF repos.*
-
-| Model                           | Params | Quantization | Weights (HF) | Processor ID (HF)                               | Notes                             |
-| ------------------------------- | :----: | :----------: | ------------ | ----------------------------------------------- | --------------------------------- |
-| **LLaMA-3.2-Vision (Base)**     |   11B  |   FP16/BF16  | `[ADD LINK]` | e.g. `meta-llama/Llama-3.2-11B-Vision-Instruct` | Base vision-language model        |
-| **RadLLaMA (Stage-1)**          |   11B  |  4-bit/FP16  | `[ADD LINK]` | `[ADD PROCESSOR ID]`                            | Domain-tuned on CXR               |
-| **RadLLaMA-Thinking (Stage-2)** |   11B  |  4-bit/FP16  | `[ADD LINK]` | `[ADD PROCESSOR ID]`                            | CoT-distilled (10-step reasoning) |
-
-> If you publish merged FP16 **and** 4-bit adapter-merged variants, list both links.
+| Model                           | Params | Quantization | Weights (HF) | Notes                             |
+| ------------------------------- | :----: | :----------: | ------------ | --------------------------------- |
+| **LLaMA-3.2-Vision (Base)**     |   11B  |   FP16/BF16  | [Link](https://huggingface.co/unsloth/Llama-3.2-11B-Vision-Instruct) | Base vision-language model        |
+| **RadLLaMA (Stage-1)**          |   11B  |  4-bit/FP16  | [Link](https://huggingface.co/parsa-mhmdi/RadLLamaThinking) | Domain-tuned on CXR               |
+| **RadLLaMA-Thinking (Stage-2)** |   11B  |  4-bit/FP16  | [Link](https://huggingface.co/parsa-mhmdi/RadLLamaThinking_Stage1) | CoT-distilled (Reasoning Model) |
 
 ---
 
 ## Quickstart: Inference Guide
 
-### Requirements
+
+Awesome—here’s a drop-in **Inference** section tailored to your *working* Unsloth + 4-bit setup, plus a clean Gradio demo.
+
+---
+
+## 🚀 Inference (Unsloth, 4-bit)
+
+> **Import order matters:** import **Unsloth before `transformers`** to avoid optimization warnings.
+
+### 1) Install
 
 ```bash
-# Python 3.10+
-pip install --upgrade "transformers>=4.44" accelerate safetensors pillow
-# GPU path (recommended for 4-bit):
-pip install bitsandbytes
-# Optional: faster tokenization
-pip install tiktoken
+pip install --upgrade unsloth transformers accelerate huggingface_hub bitsandbytes pillow
 ```
 
-> **Note**: 4-bit/8-bit **bitsandbytes** quantization requires NVIDIA CUDA. On CPU-only environments, see [CPU options](#cpu-options).
-
-### GPU (4-bit, Transformers/bitsandbytes)
+### 2) Download weights (local cache)
 
 ```python
+from huggingface_hub import snapshot_download
+
+repo_id = "parsa-mhmdi/RadLLamaThinking_Stage1_Final"
+local_checkpoint_dir = "./parsa-mhmdi/RadLLamaThinking_Stage1_Final"  # any local path
+
+snapshot_download(
+    repo_id=repo_id,
+    local_dir=local_checkpoint_dir,
+    repo_type="model",
+)
+```
+
+> Optional (download only specific files): add `allow_patterns=["*.json","*.safetensors","*model*","*tokenizer*"]`.
+
+### 3) Load the model (4-bit, Unsloth Vision)
+
+```python
+from unsloth import FastVisionModel  # FastLanguageModel is for text-only LLMs
 import torch
-from PIL import Image
-from transformers import AutoModelForCausalLM, AutoProcessor, BitsAndBytesConfig
 
-MODEL_ID = "YOUR_HF/RadLLaMA-Thinking"      # <-- replace with your HF repo
-PROC_ID  = "YOUR_HF/RadLLaMA-Thinking"      # <-- often the same as model id
+local_checkpoint_dir = "./parsa-mhmdi/RadLLamaThinking_Stage1_Final"
 
-bnb_cfg = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_compute_dtype=torch.bfloat16,
-    bnb_4bit_quant_type="nf4"
+model, tokenizer = FastVisionModel.from_pretrained(
+    local_checkpoint_dir,
+    max_seq_length=2048,
+    load_in_4bit=True,                  # 4-bit PEFT/merged checkpoints
+    use_gradient_checkpointing="unsloth",
 )
+```
 
-processor = AutoProcessor.from_pretrained(PROC_ID, trust_remote_code=True)
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL_ID,
-    quantization_config=bnb_cfg,
-    torch_dtype=torch.bfloat16,
-    device_map="auto",
-    trust_remote_code=True,
-)
+### 4) Inference on your dataset sample (CombinedChestXRDataset)
 
-image = Image.open("path/to/cxr.png").convert("RGB")
+```python
+from unsloth import FastVisionModel
+from transformers import TextStreamer
 
-# Minimal, no-CoT prompt (report only)
-user_text = (
-    "You are a board-certified radiologist. "
-    "Generate a concise, RSNA/ACR-style report for this CXR with EXACTLY these "
-    "headers: Technique, View, Findings, Impression."
-)
+# 1) Put the vision model in inference mode (important)
+FastVisionModel.for_inference(model)
+model.eval()
 
-messages = [
+# 2) Pick a sample from your test split
+sample = test_chex[100]   # or: sample = test_mim[100]
+
+# 3) Extract PIL image + instruction text from the Unsloth-style messages
+user_turn    = sample["messages"][0]
+user_content = user_turn["content"]
+
+image = None
+instruction_text = None
+for part in user_content:
+    if part.get("type") == "image":
+        image = part.get("image")           # PIL.Image
+    elif part.get("type") == "text":
+        instruction_text = part.get("text") # the same instruction used during training
+
+assert image is not None, "No image found in messages[0].content"
+assert instruction_text is not None, "No text instruction found in messages[0].content"
+
+# 4) Build user message (image placeholder + text)
+gen_messages = [
     {
         "role": "user",
         "content": [
-            {"type": "image", "image": image},
-            {"type": "text",  "text": user_text},
+            {"type": "image"},                          # placeholder; actual pixels passed below
+            {"type": "text", "text": instruction_text}, # keep the SAME schema you trained with
         ],
     }
 ]
 
-prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-inputs = processor(text=prompt, images=[image], return_tensors="pt").to(model.device)
-
-with torch.inference_mode():
-    out = model.generate(
-        **inputs,
-        max_new_tokens=512,
-        do_sample=False,
-        temperature=0.0,
-        repetition_penalty=1.05,
-        pad_token_id=processor.tokenizer.eos_token_id,
-    )
-
-# Strip the prompt part
-gen = out[:, inputs["input_ids"].shape[-1]:]
-text = processor.batch_decode(gen, skip_special_tokens=True)[0]
-print(text)
-```
-
-### CPU options
-
-* **Transformers on CPU (FP16 → float32)**: works but slower; omit `BitsAndBytesConfig` and load with `torch_dtype=torch.float32`, `device_map={"": "cpu"}`.
-* **Highly recommended for CPU**: provide a **GGUF** export and run with [llama.cpp] or use **optimum-intel** for INT8 CPU inference. Add those links/instructions if you publish such artifacts.
-
-Example (Transformers CPU fallback):
-
-```python
-from transformers import AutoModelForCausalLM, AutoProcessor
-from PIL import Image
-import torch
-
-MODEL_ID = "YOUR_HF/RadLLaMA-Thinking"
-PROC_ID  = "YOUR_HF/RadLLaMA-Thinking"
-
-processor = AutoProcessor.from_pretrained(PROC_ID, trust_remote_code=True)
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL_ID,
-    torch_dtype=torch.float32,
-    device_map={"": "cpu"},
-    trust_remote_code=True,
+# 5) Turn chat to a prompt string
+input_text = tokenizer.apply_chat_template(
+    gen_messages,
+    add_generation_prompt=True
 )
 
-# ... (use the same messaging / generate code as above)
+# 6) Tokenize image + text together
+inputs = tokenizer(
+    image,
+    input_text,
+    add_special_tokens=False,     # required for Unsloth’s chat template
+    return_tensors="pt",
+).to("cuda")
+
+# 7) (Optional) stream to stdout
+streamer = TextStreamer(tokenizer, skip_prompt=True)
+
+# 8) Generate
+_ = model.generate(
+    **inputs,
+    streamer=streamer,
+    max_new_tokens=256,
+    use_cache=True,
+    temperature=0.7,
+    top_p=0.9,
+)
 ```
 
-### Generate a full RSNA-style report
+### 5) Inference from a raw image (no dataset object)
 
-Use this when you **don’t** want the model to print internal reasoning, only the final report:
+```python
+from PIL import Image
+from transformers import TextStreamer
 
+FastVisionModel.for_inference(model)
+model.eval()
+
+image = Image.open("path/to/cxr.png").convert("RGB")
+instruction_text = (
+    "You are a board-certified radiologist. Generate a concise RSNA/ACR-style "
+    "report with EXACTLY these headers: Technique, View, Findings, Impression. "
+    "Base all statements only on the image; handle uncertainty explicitly."
+)
+
+gen_messages = [
+    {"role": "user",
+     "content": [
+         {"type": "image"},
+         {"type": "text", "text": instruction_text},
+     ]}
+]
+
+input_text = tokenizer.apply_chat_template(gen_messages, add_generation_prompt=True)
+inputs = tokenizer(image, input_text, add_special_tokens=False, return_tensors="pt").to("cuda")
+
+streamer = TextStreamer(tokenizer, skip_prompt=True)
+_ = model.generate(
+    **inputs,
+    streamer=streamer,
+    max_new_tokens=512,
+    temperature=0.7,
+    top_p=0.9,
+    use_cache=True,
+)
 ```
-"You are a board-certified radiologist specialized in adult chest radiography.
-Base all statements on the provided image only. Use EXACTLY these headers:
-Technique, View, Findings, Impression. Handle uncertainty explicitly and avoid
-hallucinations."
+
+---
+
+## 🌐 Gradio Demo (single-file app)
+
+> Runs your local checkpoint with image upload + custom instruction.
+> For CUDA/4-bit you need an NVIDIA GPU; for CPU fallback set `load_in_4bit=False` and remove `.to("cuda")` calls (will be slower).
+
+```python
+# app.py
+import gradio as gr
+from PIL import Image
+import torch
+from unsloth import FastVisionModel
+
+MODEL_DIR = "./parsa-mhmdi/RadLLamaThinking_Stage1_Final"
+
+# ---- Load once at startup ----
+model, tokenizer = FastVisionModel.from_pretrained(
+    MODEL_DIR,
+    max_seq_length=2048,
+    load_in_4bit=True,
+    use_gradient_checkpointing="unsloth",
+)
+FastVisionModel.for_inference(model)
+model.eval()
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+DEFAULT_PROMPT = (
+    "You are a board-certified radiologist specialized in adult chest radiography. "
+    "Generate a concise clinical report with EXACTLY these headers in order: "
+    "Technique, View, Findings, Impression. Base every statement only on the image; "
+    "handle uncertainty explicitly; avoid hallucinations."
+)
+
+def generate_report(image: Image.Image, instruction: str, max_new_tokens: int, temperature: float, top_p: float):
+    if image is None:
+        return "Please upload a CXR image."
+    if not instruction or instruction.strip() == "":
+        instruction = DEFAULT_PROMPT
+
+    gen_messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image"},
+                {"type": "text", "text": instruction},
+            ],
+        }
+    ]
+
+    prompt = tokenizer.apply_chat_template(gen_messages, add_generation_prompt=True)
+    inputs = tokenizer(
+        image,
+        prompt,
+        add_special_tokens=False,
+        return_tensors="pt",
+    )
+
+    if DEVICE == "cuda":
+        inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
+
+    with torch.inference_mode():
+        out = model.generate(
+            **inputs,
+            max_new_tokens=int(max_new_tokens),
+            temperature=float(temperature),
+            top_p=float(top_p),
+            use_cache=True,
+            do_sample=(temperature > 0.0),
+        )
+
+    # Strip the prompt tokens for clean output
+    gen_only = out[:, inputs["input_ids"].shape[-1]:]
+    text = tokenizer.batch_decode(gen_only, skip_special_tokens=True)[0]
+    return text
+
+with gr.Blocks(title="RadLLaMA-Thinking Inference") as demo:
+    gr.Markdown("## RadLLaMA(-Thinking) — Chest X-ray Report Generation")
+    with gr.Row():
+        with gr.Column():
+            img = gr.Image(type="pil", label="Chest X-ray (PNG/JPG)")
+            instr = gr.Textbox(label="Instruction", value=DEFAULT_PROMPT, lines=5)
+            max_tokens = gr.Slider(64, 1024, value=512, step=32, label="max_new_tokens")
+            temp = gr.Slider(0.0, 1.2, value=0.7, step=0.05, label="temperature")
+            top_p = gr.Slider(0.1, 1.0, value=0.9, step=0.05, label="top_p")
+            btn = gr.Button("Generate Report")
+        with gr.Column():
+            out = gr.Textbox(label="Model Output", lines=24)
+
+    btn.click(fn=generate_report, inputs=[img, instr, max_tokens, temp, top_p], outputs=out)
+
+if __name__ == "__main__":
+    demo.queue().launch()
 ```
 
-### Generate with explicit 10-step CoT
+Run it:
 
-If you want the **reasoning steps** first (10 numbered steps, then the report), prompt like this:
-
-```
-"First, produce EXACTLY TEN (10) concise numbered reasoning steps grounded in the image.
-Then generate the final clinical report with EXACTLY these headers:
-Technique, View, Findings, Impression. No extra sections."
+```bash
+python app.py
 ```
 
-> ⚠️ Use CoT output responsibly. If you ship a product, consider hiding intermediate reasoning and only surfacing the final report.
-
+> **Switching models**: to test Stage-2 / Thinking, just point `MODEL_DIR` to your other local folder or replace with the correct HF snapshot path.
 ---
 
 ## Results (brief)
@@ -205,18 +318,16 @@ Technique, View, Findings, Impression. No extra sections."
 ```
 .
 ├─ README.md
-├─ env/                  # (optional) environment files
-├─ scripts/
-│  ├─ infer_transformers.py    # CLI inference (GPU/CPU)
-│  └─ utils.py
-├─ examples/
-│  ├─ sample_cxr.png
-│  └─ prompts/
-│     ├─ rsna_report.txt
-│     └─ cot_plus_report.txt
-├─ weights/              # (optional) local weights or HF pointer
-└─ results/              # (optional) metrics, figures
+├─ Images/
+├─ RadLLaMAThinking_Download_Data.ipynb
+├─ RadLLaMAThinking_Train_CoTReasoning.ipynb
+├─ RadLLaMAThinking_Train_LargeScale.ipynb
+.
 ```
+
+* **RadLLaMAThinking_Download_Data.ipynb** — notebook for downloading the MIMIC-CXR and CheXpert Plus datasets.
+* **RadLLaMAThinking_Train_LargeScale.ipynb** — notebook for loading the combined dataset and performing large-scale training.
+* **RadLLaMAThinking_Train_CoTReasoning.ipynb** — notebook for loading the CXR CoT Reasoning dataset and fine-tuning with reasoning supervision.
 
 ---
 
@@ -225,40 +336,15 @@ Technique, View, Findings, Impression. No extra sections."
 If you use this repository, models, or datasets in your research, please cite:
 
 ```bibtex
-@article{MohammadiSharifian2025RadLLaMAThinking,
-  title   = {Clinical Reasoning Enhancement for Chest X-ray Reporting using Chain-of-Thought tuning of Large Vision Language Models},
-  author  = {Parsa Mohammadi and Saeed Sharifian},
-  journal = {Computers in Biology and Medicine},
-  year    = {2025},
-  note    = {Code and weights: https://github.com/PARSA-MHMDI/RadLLaMA-Thinking},
-}
+
+
 ```
-
-**Datasets** (please also cite when applicable):
-
-```bibtex
-@dataset{MIMIC_CXR_2_1_0,
-  title   = {MIMIC-CXR (version 2.1.0)},
-  author  = {Johnson, A. et al.},
-  year    = {2019},
-  url     = {https://physionet.org/content/mimic-cxr/2.1.0/}
-}
-
-@dataset{CheXpertPlus2024,
-  title   = {CheXpert Plus},
-  author  = {Chambon, P. et al.},
-  year    = {2024},
-  url     = {https://stanfordaimi.azurewebsites.net/datasets}
-}
-```
-
-> Replace with your preferred canonical citations/DOIs once finalized.
 
 ---
 
 ## Licenses & Data Access
 
-* **Models & Code**: add your chosen license (e.g., Apache-2.0).
+* **Models & Code**: Apache-2.0.
 * **MIMIC-CXR / CheXpert Plus**: require credentialed access and adherence to their data use agreements. **We do not redistribute images or PHI.**
 * **Intended Use**: research and education.
 
